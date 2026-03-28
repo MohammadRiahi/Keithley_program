@@ -1,0 +1,177 @@
+1    ===============================================================
+2    COPILOT PROMPT — Generate SWV.tsp for Keithley 2450 SourceMeter
+3    ===============================================================
+4
+5    I am giving you a TSP script called CyclicVoltammetry.tsp that runs
+6    on a Keithley 2450 SourceMeter. I want you to create a new file called
+7    SWV.tsp that implements Square Wave Voltammetry (SWV) on the same
+8    instrument. The new file must have exactly the same UI structure,
+9    screen layout, button labels, display style, and settings pages as
+10   the CyclicVoltammetry.tsp file you are given — just adapted for SWV
+11   parameters instead of CV parameters.
+12
+13   Here is everything you need to know to write the SWV logic correctly.
+14
+15   ---------------------------------------------------------------
+16   SECTION 1 — WHAT SWV IS
+17   ---------------------------------------------------------------
+18   Square Wave Voltammetry (SWV) applies a square wave superimposed on
+19   a rising staircase potential. Each cycle consists of:
+20     1. A forward pulse: potential steps UP by Esw above the staircase
+21     2. A reverse pulse: potential steps DOWN by Esw below the staircase
+22     3. The staircase baseline then increments by dE before the next cycle
+23
+24   The potential waveform per cycle looks like:
+25     - Hold at (staircase_center - Esw) for pulse_width ms   [low pulse]
+26     - Hold at (staircase_center + Esw) for pulse_width ms   [high pulse]
+27     - Increment staircase by dE
+28     - Repeat
+29
+30   ---------------------------------------------------------------
+31   SECTION 2 — PARAMETERS THE USER MUST BE ABLE TO SET IN THE UI
+32   ---------------------------------------------------------------
+33   These are the SWV parameters. Expose all of these as editable fields
+34   in the settings UI, exactly as the CV script exposes its parameters:
+35
+36     Es     = Start potential          default: -0.10 V
+37     Ef     = End potential            default: +0.45 V
+38     Esw    = Pulse amplitude          default: 0.025 V    (25 mV)
+39              (how far each pulse goes above/below the staircase center)
+40     dE     = Step potential           default: 0.005 V    (5 mV)
+41              (how much the staircase increments after each full cycle)
+42     f      = Frequency                default: 15 Hz
+43              (number of complete square wave cycles per second)
+44     tp     = Pulse width              default: calculated as 1/(2*f)
+45              (hold time for each half-cycle before sampling)
+46              At 15 Hz: tp = 1/(2*15) = 33.33 ms
+47     t_eq = Equilibration time         default: 5 s
+48              (time to hold at Es before scan begins, no square wave)
+49     Irange = Current range            default: 100e-6 A (100 µA)
+50
+51   Derived/calculated values (compute these internally, do not ask user):
+52     Number of cycles = round((Ef - Es) / dE)
+53     Pulse period         = 1 / f   (seconds)
+54     Pulse width tp       = pulse_period / 2
+55
+56   ---------------------------------------------------------------
+57   SECTION 3 — EXACT TIMING AND SAMPLING LOGIC
+58   ---------------------------------------------------------------
+59   This is the most important section. Implement it exactly as described.
+60
+61   For each cycle n (staircase center = Es + (n-1)*dE):
+62
+63     STEP A — Apply LOW pulse (reverse pulse):
+64         Set output voltage = staircase_center - Esw
+65         Wait for (tp - sample_time) seconds    -- let capacitive current die
+66         Measure current at end of pulse        -- this is Ir (reverse current)
+67         Sample current for last ~1 ms of the pulse hold
+68         Store Ir
+69
+70      STEP B — Apply HIGH pulse (forward pulse):
+71       Set output voltage = staircase_center + Esw
+72       Wait for (tp - sample_time) seconds    -- let capacitive current die
+73       Measure current at end of pulse        -- this is If (forward current)
+74       Sample current for last ~1 ms of the pulse hold
+75       Store If
+76
+77      STEP C — Compute net current:
+78       I_net = If - Ir
+79       Store the pair: (staircase_center, I_net)
+80
+81      STEP D — Increment staircase:
+82       staircase_center = staircase_center + dE
+83       Proceed to next cycle
+84
+85    WHY WE SAMPLE AT THE END OF EACH PULSE:
+86    When the potential jumps, a large capacitive (non-faradaic) current
+87    spike occurs immediately. This decays exponentially with time constant
+88    RC (typically <5 ms for a gold electrode). The faradaic (redox) current
+89    decays much more slowly (proportional to t^-0.5). By waiting until the
+90    end of the pulse before sampling, the capacitive current has decayed to
+91    near zero while the faradaic current is still present. This gives a
+92    signal that is almost purely faradaic.
+93
+94    WHY WE SUBTRACT If - Ir:
+95    Any residual capacitive current that has not fully decayed is identical
+96    in both the forward and reverse pulses (same RC, same electrode). When
+97    we subtract Ir from If, this residual background cancels out completely.
+98    The faradaic current does NOT cancel because it is different in the
+99    forward (oxidation) and reverse (reduction) pulses — it adds up in the
+100   subtraction. The result is a signal with greatly suppressed background
+101   and enhanced faradaic response.
+102
+103   Sample time recommendation: 1 ms integrated average at end of each pulse.
+104   Do NOT sample at the beginning of the pulse — only at the very end.
+105
+106   ---------------------------------------------------------------
+107   SECTION 4 — OUTPUT DATA FORMAT
+108   ---------------------------------------------------------------
+109   Each data point recorded must contain:
+110     Column 1: Staircase potential (V)    — the baseline E at that cycle
+111     Column 2: If (A)                     — forward current
+112     Column 3: Ir (A)                     — reverse current
+113     Column 4: I_net = If - Ir (A)        — the net SWV current (plot this)
+114
+115   The voltammogram to display and save is Column 1 (x-axis: potential)
+116   vs Column 4 (y-axis: net current If - Ir).
+117
+118   ---------------------------------------------------------------
+119   SECTION 5 — EQUILIBRATION PHASE
+120   ---------------------------------------------------------------
+121   Before the square wave sweep begins:
+122     1. Set output to Es (start potential)
+123     2. Hold for t_eq seconds (default 5 s) with no pulsing
+124     3. Do NOT record any data during equilibration
+125     4. After t_eq has elapsed, begin the square wave sweep from cycle 1
+126
+127   This allows the electrode-solution interface to reach steady state
+128   before measurement begins, eliminating baseline drift.
+129
+130   ---------------------------------------------------------------
+131   SECTION 6 — UI AND DISPLAY REQUIREMENTS
+132   ---------------------------------------------------------------
+133   The UI must be identical in style and structure to CyclicVoltammetry.tsp:
+134     - Same settings screen layout and navigation
+135     - Same font sizes, button styles, screen pages
+136     - Replace CV parameter fields with SWV parameter fields listed above
+137     - Display screen must plot potential (V) on x-axis vs I_net (µA) on y-axis
+138     - Show a live updating plot during the run, same as CV script does
+139     - Include Autoscale, Start Test, Save Data, and End App buttons
+140      in the same positions as the CV script
+141     - Title of the app screen should read: "Square Wave Voltammetry"
+142     - Save Data must export a .csv with all 4 columns described above
+143     - The saved filename should default to "SWV_data.csv"
+144
+145   ---------------------------------------------------------------
+146   SECTION 7 — SAFETY AND INSTRUMENT SETTINGS
+147   ---------------------------------------------------------------
+148     - Current limit (source limit): set to Irange (default 100 µA)
+149     - If current exceeds Irange at any point, abort and display error
+150     - Voltage source mode: VOLTAGE (not current)
+151     - 4-wire sense: OFF (standard 2-wire for electrochemistry)
+152     - Output off state: HIGHZ (high impedance) when not measuring
+153     - Always turn output OFF after scan completes or if aborted
+154
+155   ---------------------------------------------------------------
+156   SECTION 8 — WHAT TO NAME THE FILE
+157   ---------------------------------------------------------------
+158   Name the output file: SWV.tsp
+159
+160   ---------------------------------------------------------------
+161   SECTION 9 — REFERENCE VALUES FOR TESTING
+162   ---------------------------------------------------------------
+163   Use these to verify the script works correctly:
+164     Es = -0.10 V, Ef = +0.45 V, Esw = 25 mV, dE = 5 mV, f = 15 Hz
+165     Expected number of cycles = (0.45 - (-0.10)) / 0.005 = 110 cycles
+166     Expected pulse period = 1/15 = 66.67 ms
+167     Expected pulse width tp = 33.33 ms
+168     Expected total scan time = 110 * 66.67 ms = ~7.3 seconds
+169     Expected peak in net current at approximately +0.125 V
+170     (this is E°' of ferrocyanide vs Ag/AgCl in PBS)
+171
+172   ===============================================================
+173   END OF PROMPT — paste the CyclicVoltammetry.tsp file content
+174   directly below this line before submitting to Copilot
+175   ===============================================================
+176
+
